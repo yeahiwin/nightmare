@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>City Lights Voice Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050510;
+            color: white;
+            font-family: sans-serif;
+            overflow: hidden;
+        }
+        #root {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client"
+        }
+    }
+    </script>
+    
+    <script type="module">
+        import React, { useRef, useState, useEffect } from "react";
+        import { createRoot } from "react-dom/client";
+
+        const { createElement: h } = React;
+
+        // --- Constants ---
+        const WINDOW_COLOR_OFF = "#2a2a35";
+        const WINDOW_COLOR_ON = "#ffeb3b";
+        const WINDOW_GLOW = "#fff59d";
+        const SKY_COLOR_TOP = "#0b1026";
+        const SKY_COLOR_BOTTOM = "#2b324a";
+        const BUILDING_COLOR = "#050508";
+        const STREETLIGHT_COLOR = "#ffaa00";
+        const GROUND_HEIGHT = 50;
+
+        const COMPLAINT_TEXTS = [
+            "Too loud!", 
+            "I'm sleeping!", 
+            "Turn it off!", 
+            "Quiet!", 
+            "Shhh!", 
+            "What's that noise?", 
+            "Hey!", 
+            "Too bright!",
+            "Shutdown!",
+            "My eyes!",
+            "Who is it?"
+        ];
+        const COMPLAINT_TEXT_COLOR = "#000000";
+        const COMPLAINT_BUBBLE_COLOR = "#ffffff";
+
+        const CityVisualizer = () => {
+            const [started, setStarted] = useState(false);
+            const canvasRef = useRef(null);
+            const containerRef = useRef(null);
+            
+            const audioContextRef = useRef(null);
+            const analyserRef = useRef(null);
+            const dataArrayRef = useRef(null);
+            
+            const rafRef = useRef(0);
+            
+            const cityRef = useRef([]);
+            const streetLightsRef = useRef([]);
+            const particlesRef = useRef([]);
+            const particleIdCounter = useRef(0);
+            
+            const policeRef = useRef([]);
+            const peopleRef = useRef([]);
+            const peopleIdCounter = useRef(0);
+            const endgameTriggered = useRef(false);
+
+            const lightingAccumulator = useRef(0);
+            
+            const [difficulty, setDifficulty] = useState(0);
+            const difficultyRef = useRef(0);
+            const decayAccumulator = useRef(0);
+
+            const generateWindowsForBlock = (w, h, type, startId) => {
+                const windows = [];
+                
+                if (type === 'skyscraper') {
+                    const cols = Math.floor(w / 10);
+                    const rows = Math.floor(h / 14);
+                    const padX = (w - (cols * 6)) / (cols + 1);
+                    
+                    for (let r = 0; r < rows; r++) {
+                        for (let c = 0; c < cols; c++) {
+                            if (Math.random() > 0.05) {
+                                windows.push({
+                                    id: `${startId}-${r}-${c}`,
+                                    x: padX + c * (6 + padX),
+                                    y: 8 + r * 12,
+                                    w: 6,
+                                    h: 8,
+                                    lit: false
+                                });
+                            }
+                        }
+                    }
+                } else if (type === 'apartment') {
+                    const cols = Math.floor(w / 18);
+                    const rows = Math.floor(h / 22);
+                    const padX = (w - (cols * 12)) / (cols + 1);
+
+                    for (let r = 0; r < rows; r++) {
+                        for (let c = 0; c < cols; c++) {
+                            if (Math.random() > 0.05) {
+                                windows.push({
+                                    id: `${startId}-${r}-${c}`,
+                                    x: padX + c * (12 + padX),
+                                    y: 10 + r * 20,
+                                    w: 12,
+                                    h: 12,
+                                    lit: false
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    const count = Math.floor((w * h) / 500);
+                    for(let i=0; i<count; i++) {
+                        const winW = 6 + Math.random() * 10;
+                        const winH = 8 + Math.random() * 12;
+                        const wx = Math.random() * (w - winW - 4) + 2;
+                        const wy = Math.random() * (h - winH - 4) + 2;
+                        
+                        const overlaps = windows.some(win => 
+                            wx < win.x + win.w + 2 && wx + winW + 2 > win.x &&
+                            wy < win.y + win.h + 2 && wy + winH + 2 > win.y
+                        );
+
+                        if (!overlaps) {
+                            windows.push({
+                                id: `${startId}-${i}`,
+                                x: wx,
+                                y: wy,
+                                w: winW,
+                                h: winH,
+                                lit: false
+                            });
+                        }
+                    }
+                }
+                return windows;
+            };
+
+            const initCity = (width, height) => {
+                const buildings = [];
+                let currentX = -50;
+                let bId = 0;
+
+                while (currentX < width + 50) {
+                    const typeRand = Math.random();
+                    let totalW = 0, totalH = 0, type;
+                    const blocks = [];
+                    let hasSpire = false;
+                    let spireHeight = 0;
+                    
+                    const overlap = Math.random() * 20;
+                    currentX -= overlap;
+
+                    if (currentX >= width + 50) break;
+
+                    if (typeRand < 0.70) {
+                        type = 'skyscraper';
+                        totalW = 50 + Math.random() * 70;
+                        totalH = height * 0.4 + Math.random() * (height * 0.45);
+                        
+                        blocks.push({
+                            xRel: 0,
+                            yRel: 0,
+                            w: totalW,
+                            h: totalH * 0.5,
+                            windows: []
+                        });
+
+                        const midW = totalW * (0.6 + Math.random() * 0.2);
+                        const midH = totalH * 0.3;
+                        blocks.push({
+                            xRel: (totalW - midW) / 2,
+                            yRel: totalH * 0.5,
+                            w: midW,
+                            h: midH,
+                            windows: []
+                        });
+
+                        const topW = midW * (0.6 + Math.random() * 0.2);
+                        const topH = totalH * 0.2;
+                        blocks.push({
+                            xRel: (totalW - topW) / 2,
+                            yRel: totalH * 0.8,
+                            w: topW,
+                            h: topH,
+                            windows: []
+                        });
+                        
+                        if (Math.random() > 0.3) {
+                            hasSpire = true;
+                            spireHeight = 20 + Math.random() * 60;
+                        }
+
+                    } else if (typeRand < 0.90) {
+                        type = 'apartment';
+                        totalW = 70 + Math.random() * 60;
+                        totalH = height * 0.2 + Math.random() * (height * 0.2);
+                        
+                        blocks.push({
+                            xRel: 0,
+                            yRel: 0,
+                            w: totalW,
+                            h: totalH,
+                            windows: []
+                        });
+                    } else {
+                        type = 'house';
+                        totalW = 30 + Math.random() * 40;
+                        totalH = height * 0.1 + Math.random() * 0.1;
+                        
+                        blocks.push({
+                            xRel: 0,
+                            yRel: 0,
+                            w: totalW,
+                            h: totalH,
+                            windows: []
+                        });
+                    }
+
+                    blocks.forEach((blk, idx) => {
+                        blk.windows = generateWindowsForBlock(blk.w, blk.h, type, `${bId}-${idx}`);
+                    });
+
+                    buildings.push({
+                        id: bId++,
+                        x: currentX,
+                        y: 0,
+                        w: totalW,
+                        h: totalH,
+                        type,
+                        blocks,
+                        hasSpire,
+                        spireHeight
+                    });
+
+                    currentX += totalW + 2;
+                }
+                
+                buildings.sort((a,b) => (Math.random() > 0.5 ? -1 : 1));
+                cityRef.current = buildings;
+
+                const lights = [];
+                const lightCount = Math.floor(width / 150);
+                for(let i=0; i<lightCount; i++) {
+                    lights.push({
+                        x: Math.random() * width,
+                        y: 0,
+                        height: 40 + Math.random() * 20
+                    });
+                }
+                streetLightsRef.current = lights;
+            };
+
+            const resetSimulation = () => {
+                lightingAccumulator.current = 0;
+                decayAccumulator.current = 0;
+                particlesRef.current = [];
+                policeRef.current = [];
+                peopleRef.current = [];
+                endgameTriggered.current = false;
+                
+                if (canvasRef.current) {
+                    initCity(canvasRef.current.width, canvasRef.current.height);
+                }
+            };
+
+            const handleStart = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const analyser = audioCtx.createAnalyser();
+                    const source = audioCtx.createMediaStreamSource(stream);
+
+                    source.connect(analyser);
+                    analyser.fftSize = 256;
+                    
+                    const bufferLength = analyser.frequencyBinCount;
+                    const dataArray = new Uint8Array(bufferLength);
+
+                    audioContextRef.current = audioCtx;
+                    analyserRef.current = analyser;
+                    dataArrayRef.current = dataArray;
+                    
+                    if (containerRef.current) {
+                        initCity(window.innerWidth, window.innerHeight);
+                    }
+
+                    setStarted(true);
+                } catch (err) {
+                    console.error("Error accessing microphone:", err);
+                    alert("Microphone access is required to visualize the sound.");
+                }
+            };
+            
+            const handleDifficultyChange = (e) => {
+                const val = parseInt(e.target.value);
+                setDifficulty(val);
+                difficultyRef.current = val;
+            };
+
+            useEffect(() => {
+                if (!started || !canvasRef.current) return;
+
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) return;
+
+                const resizeCanvas = () => {
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+                    cityRef.current = [];
+                    initCity(window.innerWidth, window.innerHeight);
+                };
+                window.addEventListener('resize', resizeCanvas);
+                resizeCanvas();
+
+                const render = () => {
+                    if (!analyserRef.current || !dataArrayRef.current) return;
+
+                    analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+                    let sum = 0;
+                    const rangeStart = 0;
+                    const rangeEnd = dataArrayRef.current.length / 2;
+                    for (let i = rangeStart; i < rangeEnd; i++) {
+                        sum += dataArrayRef.current[i];
+                    }
+                    const averageVolume = sum / (rangeEnd - rangeStart);
+
+                    const groundY = canvas.height - GROUND_HEIGHT;
+                    let totalWindows = 0;
+                    const unlitWindows = [];
+                    const allLitWindows = [];
+
+                    cityRef.current.forEach(building => {
+                        building.blocks.forEach(block => {
+                            block.windows.forEach(window => {
+                                totalWindows++;
+                                if (window.lit) {
+                                    const drawX = building.x + block.xRel;
+                                    const drawY = groundY - block.yRel - block.h;
+                                    allLitWindows.push({
+                                        bx: drawX + window.x,
+                                        by: drawY + window.y,
+                                        w: window
+                                    });
+                                } else {
+                                    unlitWindows.push(window);
+                                }
+                            });
+                        });
+                    });
+
+                    const litPercentage = totalWindows > 0 ? allLitWindows.length / totalWindows : 0;
+
+                    if (averageVolume > 15) {
+                        lightingAccumulator.current += (averageVolume - 15) * 0.05;
+                        const numToLight = Math.floor(lightingAccumulator.current);
+                        
+                        if (numToLight > 0) {
+                            lightingAccumulator.current -= numToLight;
+                            for (let i=0; i<numToLight; i++) {
+                                if (unlitWindows.length === 0) break;
+                                const rndIdx = Math.floor(Math.random() * unlitWindows.length);
+                                const win = unlitWindows[rndIdx];
+                                win.lit = true;
+                                unlitWindows[rndIdx] = unlitWindows[unlitWindows.length - 1];
+                                unlitWindows.pop();
+                            }
+                        }
+                    } else {
+                        if (difficultyRef.current > 0) {
+                            decayAccumulator.current += difficultyRef.current * 0.02;
+                            
+                            const numToTurnOff = Math.floor(decayAccumulator.current);
+                            if (numToTurnOff > 0) {
+                                decayAccumulator.current -= numToTurnOff;
+                                
+                                for(let i=0; i<numToTurnOff; i++) {
+                                    if (allLitWindows.length === 0) break;
+                                    const rndIdx = Math.floor(Math.random() * allLitWindows.length);
+                                    const winObj = allLitWindows[rndIdx];
+                                    winObj.w.lit = false;
+                                    
+                                    allLitWindows[rndIdx] = allLitWindows[allLitWindows.length - 1];
+                                    allLitWindows.pop();
+                                }
+                            }
+                        }
+                    }
+
+                    if (litPercentage > 0.80) {
+                        if (!endgameTriggered.current) {
+                            endgameTriggered.current = true;
+                            for(let i=0; i<5; i++) {
+                                policeRef.current.push({
+                                    id: i,
+                                    active: true,
+                                    x: -150 - (i * 200),
+                                    targetX: canvas.width * 0.1 + Math.random() * (canvas.width * 0.8),
+                                    lightTimer: Math.floor(Math.random() * 10),
+                                    speed: 8 + Math.random() * 5
+                                });
+                            }
+                        }
+                    }
+
+                    policeRef.current.forEach(car => {
+                        if (car.active) {
+                            if (car.x < car.targetX) {
+                                car.x += car.speed;
+                            }
+                            car.lightTimer++;
+                        }
+                    });
+
+                    if (endgameTriggered.current) {
+                        if (peopleRef.current.length < 80 && Math.random() < 0.3) {
+                            const spawnX = Math.random() * canvas.width;
+                            peopleRef.current.push({
+                                id: peopleIdCounter.current++,
+                                x: spawnX,
+                                vx: (Math.random() - 0.5) * 6,
+                                color: `hsl(${Math.random()*360}, 70%, 65%)`
+                            });
+                        }
+
+                        peopleRef.current.forEach(p => {
+                            p.x += p.vx;
+                            if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
+                        });
+                    }
+
+                    if (litPercentage > 0.01) {
+                        const spawnChance = 0.005 + (litPercentage * 0.045);
+                        
+                        if (Math.random() < spawnChance) {
+                            if (allLitWindows.length > 0) {
+                                const src = allLitWindows[Math.floor(Math.random() * allLitWindows.length)];
+                                
+                                particlesRef.current.push({
+                                    id: particleIdCounter.current++,
+                                    x: src.bx + src.w.w / 2,
+                                    y: src.by,
+                                    text: COMPLAINT_TEXTS[Math.floor(Math.random() * COMPLAINT_TEXTS.length)],
+                                    vx: (Math.random() - 0.5) * 0.5,
+                                    vy: -0.5 - Math.random() * 1.0,
+                                    life: 1.0,
+                                    maxLife: 1.0,
+                                    size: 10 + Math.random() * 4,
+                                    color: COMPLAINT_TEXT_COLOR
+                                });
+                            }
+                        }
+                    }
+
+                    particlesRef.current = particlesRef.current.filter(p => p.life > 0);
+                    particlesRef.current.forEach(p => {
+                        p.x += p.vx;
+                        p.y += p.vy;
+                        p.life -= 0.003;
+                    });
+
+                    const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+                    grad.addColorStop(0, SKY_COLOR_TOP);
+                    grad.addColorStop(1, SKY_COLOR_BOTTOM);
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    ctx.fillStyle = "white";
+                    for(let i=0; i<80; i++) {
+                        const x = (Math.sin(i * 132.1) * 0.5 + 0.5) * canvas.width;
+                        const y = (Math.cos(i * 45.3) * 0.5 + 0.5) * canvas.height * 0.7;
+                        const size = Math.random() > 0.95 ? 1.5 : 0.8;
+                        ctx.globalAlpha = Math.random() * 0.5 + 0.3;
+                        ctx.beginPath();
+                        ctx.arc(x, y, size, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.globalAlpha = 1.0;
+                    }
+
+                    const moonX = canvas.width * 0.2;
+                    const moonY = canvas.height * 0.15;
+                    const moonRadius = 40;
+                    
+                    ctx.shadowBlur = 30;
+                    ctx.shadowColor = "#fffae3";
+                    ctx.fillStyle = "#fffae3";
+                    ctx.beginPath();
+                    ctx.arc(moonX, moonY, moonRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+
+                    const shadowOffset = litPercentage * (moonRadius * 3);
+                    ctx.fillStyle = "#0b1026";
+                    
+                    const startShadowX = moonX;
+                    const endShadowX = moonX + moonRadius * 2.5;
+                    const currentShadowX = startShadowX + (endShadowX - startShadowX) * litPercentage;
+                    
+                    ctx.beginPath();
+                    ctx.arc(currentShadowX, moonY, moonRadius + 2, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    cityRef.current.forEach(building => {
+                        building.blocks.forEach(block => {
+                            const drawX = building.x + block.xRel;
+                            const drawY = groundY - block.yRel - block.h;
+                            
+                            ctx.fillStyle = BUILDING_COLOR;
+                            ctx.fillRect(drawX, drawY, block.w, block.h);
+
+                            block.windows.forEach(win => {
+                                const wx = drawX + win.x;
+                                const wy = drawY + win.y;
+                                
+                                if (win.lit) {
+                                    ctx.fillStyle = WINDOW_COLOR_ON;
+                                    ctx.shadowBlur = 5;
+                                    ctx.shadowColor = WINDOW_GLOW;
+                                } else {
+                                    ctx.fillStyle = WINDOW_COLOR_OFF;
+                                    ctx.shadowBlur = 0;
+                                }
+                                ctx.fillRect(wx, wy, win.w, win.h);
+                            });
+                            ctx.shadowBlur = 0;
+                        });
+
+                        if (building.hasSpire) {
+                            const topBlock = building.blocks[building.blocks.length - 1];
+                            const spireBaseX = building.x + topBlock.xRel + topBlock.w / 2;
+                            const spireBaseY = groundY - topBlock.yRel - topBlock.h;
+                            
+                            ctx.strokeStyle = BUILDING_COLOR;
+                            ctx.lineWidth = 3;
+                            ctx.beginPath();
+                            ctx.moveTo(spireBaseX, spireBaseY);
+                            ctx.lineTo(spireBaseX, spireBaseY - building.spireHeight);
+                            ctx.stroke();
+
+                            if (litPercentage > 0.5) {
+                                ctx.fillStyle = "red";
+                                ctx.beginPath();
+                                ctx.arc(spireBaseX, spireBaseY - building.spireHeight, 1.5, 0, Math.PI*2);
+                                ctx.fill();
+                            }
+                        }
+                    });
+
+                    ctx.fillStyle = "#151515";
+                    ctx.fillRect(0, groundY, canvas.width, GROUND_HEIGHT);
+                    ctx.fillStyle = "#222";
+                    ctx.fillRect(0, groundY + 15, canvas.width, 2);
+
+                    streetLightsRef.current.forEach(light => {
+                        ctx.strokeStyle = "#222";
+                        ctx.lineWidth = 3;
+                        ctx.beginPath();
+                        ctx.moveTo(light.x, groundY);
+                        ctx.lineTo(light.x, groundY - light.height);
+                        ctx.stroke();
+
+                        ctx.fillStyle = "#111";
+                        ctx.beginPath();
+                        ctx.ellipse(light.x, groundY - light.height, 8, 3, 0, 0, Math.PI*2);
+                        ctx.fill();
+
+                        const glow = ctx.createRadialGradient(light.x, groundY - light.height + 5, 2, light.x, groundY - light.height + 20, 60);
+                        glow.addColorStop(0, STREETLIGHT_COLOR);
+                        glow.addColorStop(1, "rgba(0,0,0,0)");
+                        
+                        ctx.fillStyle = glow;
+                        ctx.beginPath();
+                        ctx.moveTo(light.x - 5, groundY - light.height);
+                        ctx.lineTo(light.x + 5, groundY - light.height);
+                        ctx.lineTo(light.x + 40, groundY);
+                        ctx.lineTo(light.x - 40, groundY);
+                        ctx.fill();
+
+                        ctx.fillStyle = "#fff";
+                        ctx.beginPath();
+                        ctx.arc(light.x, groundY - light.height + 2, 2, 0, Math.PI * 2);
+                        ctx.fill();
+                    });
+                    
+                    policeRef.current.forEach(car => {
+                        if (car.active) {
+                            const carY = groundY;
+                            
+                            ctx.fillStyle = "#1a237e";
+                            ctx.fillRect(car.x, carY - 25, 80, 25);
+                            ctx.fillStyle = "#ffffff";
+                            ctx.fillRect(car.x + 20, carY - 35, 40, 10);
+                            
+                            ctx.fillStyle = "#000";
+                            ctx.beginPath();
+                            ctx.arc(car.x + 15, carY - 5, 10, 0, Math.PI*2);
+                            ctx.arc(car.x + 65, carY - 5, 10, 0, Math.PI*2);
+                            ctx.fill();
+                            
+                            const flash = Math.floor(car.lightTimer / 8) % 2 === 0;
+                            
+                            ctx.fillStyle = flash ? "red" : "#500";
+                            ctx.fillRect(car.x + 30, carY - 40, 10, 5);
+                            ctx.shadowBlur = flash ? 20 : 0;
+                            ctx.shadowColor = "red";
+                            if (flash) ctx.fillRect(car.x + 30, carY - 40, 10, 5);
+                            ctx.shadowBlur = 0;
+
+                            ctx.fillStyle = !flash ? "blue" : "#005";
+                            ctx.fillRect(car.x + 40, carY - 40, 10, 5);
+                            ctx.shadowBlur = !flash ? 20 : 0;
+                            ctx.shadowColor = "blue";
+                            if (!flash) ctx.fillRect(car.x + 40, carY - 40, 10, 5);
+                            ctx.shadowBlur = 0;
+                        }
+                    });
+
+                    peopleRef.current.forEach(p => {
+                        ctx.fillStyle = p.color;
+                        const bob = Math.sin(Date.now() / 50) * 2;
+                        const pY = groundY;
+                        ctx.fillRect(p.x, pY - 14 + bob, 6, 14);
+                        
+                        ctx.fillStyle = "#fab";
+                        ctx.fillRect(p.x + 1, pY - 14 + bob - 4, 4, 4);
+                    });
+
+                    particlesRef.current.forEach(p => {
+                        const padding = 6;
+                        ctx.font = `bold ${Math.floor(p.size)}px sans-serif`;
+                        const textMetrics = ctx.measureText(p.text);
+                        const textWidth = textMetrics.width;
+                        const bubbleHeight = p.size + padding * 2;
+                        const bubbleWidth = textWidth + padding * 3;
+                        const bubbleX = p.x - bubbleWidth / 2;
+                        const bubbleY = p.y - bubbleHeight;
+
+                        ctx.globalAlpha = Math.min(p.life, 1.0);
+
+                        ctx.fillStyle = COMPLAINT_BUBBLE_COLOR;
+                        ctx.beginPath();
+                        if (ctx.roundRect) {
+                            ctx.roundRect(bubbleX, bubbleY, bubbleWidth, bubbleHeight, 6);
+                        } else {
+                            ctx.rect(bubbleX, bubbleY, bubbleWidth, bubbleHeight);
+                        }
+                        ctx.fill();
+
+                        ctx.beginPath();
+                        ctx.moveTo(p.x, bubbleY + bubbleHeight - 1);
+                        ctx.lineTo(p.x - 4, bubbleY + bubbleHeight + 5);
+                        ctx.lineTo(p.x + 4, bubbleY + bubbleHeight - 1);
+                        ctx.fill();
+
+                        ctx.fillStyle = p.color;
+                        ctx.textBaseline = "middle";
+                        ctx.textAlign = "center";
+                        ctx.fillText(p.text, p.x, bubbleY + bubbleHeight/2 + 1);
+                    });
+                    ctx.globalAlpha = 1.0;
+
+                    rafRef.current = requestAnimationFrame(render);
+                };
+
+                render();
+
+                return () => {
+                    window.removeEventListener('resize', resizeCanvas);
+                    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+                };
+            }, [started]);
+
+            if (!started) {
+                return h('div', {
+                    style: {
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        height: '100vh',
+                        background: `linear-gradient(to bottom, ${SKY_COLOR_TOP}, ${SKY_COLOR_BOTTOM})`,
+                        color: 'white',
+                        textAlign: 'center'
+                    }
+                },
+                    h('h1', { style: { fontFamily: 'serif', letterSpacing: '2px' } }, 'Nightmare'),
+                    h('p', { style: { marginBottom: '2rem', opacity: 0.8, maxWidth: '400px' } },
+                        'The city sleeps. Your voice brings the light.',
+                        h('br'),
+                        h('span', { style: { fontSize: '0.8em', opacity: 0.6 } }, 'But beware of waking the neighbors...')
+                    ),
+                    h('button', {
+                        onClick: handleStart,
+                        style: {
+                            padding: '12px 32px',
+                            fontSize: '1.1rem',
+                            background: 'transparent',
+                            color: WINDOW_COLOR_ON,
+                            border: `2px solid ${WINDOW_COLOR_ON}`,
+                            borderRadius: '50px',
+                            cursor: 'pointer',
+                            fontWeight: 'bold',
+                            transition: 'all 0.3s ease',
+                            boxShadow: `0 0 10px ${WINDOW_COLOR_OFF}`
+                        },
+                        onMouseOver: (e) => {
+                            e.currentTarget.style.background = WINDOW_COLOR_ON;
+                            e.currentTarget.style.color = 'black';
+                            e.currentTarget.style.boxShadow = `0 0 20px ${WINDOW_COLOR_ON}`;
+                        },
+                        onMouseOut: (e) => {
+                            e.currentTarget.style.background = 'transparent';
+                            e.currentTarget.style.color = WINDOW_COLOR_ON;
+                            e.currentTarget.style.boxShadow = `0 0 10px ${WINDOW_COLOR_OFF}`;
+                        }
+                    }, 'Wake Up City')
+                );
+            }
+
+            return h('div', {
+                ref: containerRef,
+                style: { width: '100vw', height: '100vh', overflow: 'hidden', position: 'relative' }
+            },
+                h('div', {
+                    style: {
+                        position: 'absolute',
+                        top: '20px',
+                        left: '20px',
+                        padding: '10px',
+                        background: 'rgba(0,0,0,0.6)',
+                        borderRadius: '8px',
+                        color: '#fff',
+                        zIndex: 100,
+                        backdropFilter: 'blur(5px)',
+                        fontFamily: 'sans-serif',
+                        fontSize: '0.8rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '5px'
+                    }
+                },
+                    h('label', { htmlFor: 'difficulty' }, `Darkness Difficulty: ${difficulty}`),
+                    h('input', {
+                        id: 'difficulty',
+                        type: 'range',
+                        min: '0',
+                        max: '100',
+                        value: difficulty,
+                        onChange: handleDifficultyChange,
+                        style: { cursor: 'pointer' }
+                    }),
+                    h('span', { style: { fontSize: '0.7em', color: '#aaa' } },
+                        difficulty === 0 ? "Lights stay on" : "Lights fade in silence"
+                    )
+                ),
+                h('button', {
+                    onClick: resetSimulation,
+                    style: {
+                        position: 'absolute',
+                        top: '20px',
+                        right: '20px',
+                        padding: '10px 20px',
+                        background: 'rgba(0,0,0,0.6)',
+                        color: '#fff',
+                        border: '1px solid #555',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        zIndex: 100,
+                        backdropFilter: 'blur(5px)',
+                        fontFamily: 'sans-serif',
+                        fontSize: '0.9rem'
+                    },
+                    onMouseOver: (e) => {
+                        e.currentTarget.style.background = 'rgba(255,255,255,0.2)';
+                    },
+                    onMouseOut: (e) => {
+                        e.currentTarget.style.background = 'rgba(0,0,0,0.6)';
+                    }
+                }, 'Reset City'),
+                h('canvas', { ref: canvasRef, style: { display: 'block' } })
+            );
+        };
+
+        const root = createRoot(document.getElementById("root"));
+        root.render(h(CityVisualizer));
+    </script>
+</body>
+</html>
